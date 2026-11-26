@@ -1,6 +1,8 @@
 //! Auto Typer: types text for you where paste is blocked (RDP lock screens, VM consoles,
 //! remote sessions).
 
+#[cfg(feature = "tray")]
+pub mod agent;
 pub mod app;
 pub mod autostart;
 pub mod cli;
