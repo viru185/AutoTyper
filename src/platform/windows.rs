@@ -19,7 +19,7 @@ use windows_sys::{
             },
         },
         UI::{
-            Shell::SHGetKnownFolderPath,
+            Shell::{KF_FLAG_DONT_VERIFY, SHGetKnownFolderPath},
             WindowsAndMessaging::{
                 MB_ICONERROR, MB_ICONINFORMATION, MB_OK, MB_SETFOREGROUND, MessageBoxW, SW_HIDE,
                 ShowWindow,
@@ -79,10 +79,13 @@ pub fn detach_console(also_shared: bool) {
 }
 
 /// A known folder such as `FOLDERID_Programs` (Start menu → Programs).
+///
+/// The path is returned even if the folder does not exist yet: on a fresh profile
+/// `%LOCALAPPDATA%\Programs` is missing until something is installed there.
 pub fn known_folder(id: &GUID) -> Option<PathBuf> {
     let mut raw: PWSTR = null_mut();
     // SAFETY: valid out-pointer; the returned buffer is freed with CoTaskMemFree.
-    let hr = unsafe { SHGetKnownFolderPath(id, 0, null_mut(), &mut raw) };
+    let hr = unsafe { SHGetKnownFolderPath(id, KF_FLAG_DONT_VERIFY as u32, null_mut(), &mut raw) };
     let path = if hr >= 0 && !raw.is_null() {
         // SAFETY: on success `raw` is a NUL-terminated wide string.
         let len = (0..).take_while(|&i| unsafe { *raw.add(i) } != 0).count();
