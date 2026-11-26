@@ -56,6 +56,7 @@ Options:
   -q, --quiet            With --install / --uninstall: no message boxes
   -h, --help             Print help
   -V, --version          Print version
+      --author           who built this
 ",
         version = env!("CARGO_PKG_VERSION")
     )
@@ -95,6 +96,8 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Command, String
             Long("uninstall") => uninstall = true,
             Long("purge") => purge = true,
             Short('q') | Long("quiet") => quiet = true,
+            // Answered before parsing; accepted here so it never errors.
+            Long("author") => {}
             other => return Err(other.unexpected().to_string()),
         }
     }

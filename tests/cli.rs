@@ -15,11 +15,30 @@ fn stdout(out: &Output) -> String {
 }
 
 #[test]
-fn help_lists_the_options() {
+fn author_prints_the_plain_card_when_piped() {
+    let out = autotyper(&["--author"]);
+    assert_eq!(out.status.code(), Some(0));
+    let text = stdout(&out);
+    assert!(text.is_ascii(), "{text:?}");
+    assert!(!text.contains('\x1b'));
+    assert!(text.contains("Viren Hirpara"));
+}
+
+#[test]
+fn author_wins_over_other_arguments() {
+    let out = autotyper(&["--clipboard", "--nonsense", "--author"]);
+    assert_eq!(out.status.code(), Some(0));
+    assert!(stdout(&out).contains("Viren Hirpara"));
+}
+
+#[test]
+fn help_lists_the_options_and_hints_at_author() {
     let out = autotyper(&["--help"]);
     assert_eq!(out.status.code(), Some(0));
     let text = stdout(&out);
     assert!(text.contains("--clipboard"));
+    assert!(text.contains("--author") && text.contains("who built this"));
+    assert!(!text.contains("Viren"));
 }
 
 #[test]
