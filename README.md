@@ -28,6 +28,8 @@ window, one keystroke at a time, as if you typed it yourself.
   (scan codes with Shift/AltGr, for VM consoles and web gateways that ignore Unicode input).
 - **Safe by design**: stops on <kbd>Esc</kbd>, when the mouse moves or when another window takes
   the focus. Refuses to type into its own window. Never saves the text.
+- **Small, always-on-top window**: just the text and a Start button; settings stay out of sight
+  until you open them.
 - **Multi-line text** with masking, character/line counts, adjustable speed and countdown.
 - **Type the clipboard** without opening a window: from the Start menu, PowerToys Command Palette,
   the tray icon or a global hotkey.
@@ -39,7 +41,7 @@ window, one keystroke at a time, as if you typed it yourself.
 
 1. Download `autotyper-windows-x86_64.exe` (or `-aarch64`) from the
    [latest release](https://github.com/viru185/AutoTyper/releases/latest).
-2. Run it, open **More options** and click **Install**. Or, from a terminal:
+2. Run it, open the settings (gear icon) and click **Install**. Or, from a terminal:
 
    ```powershell
    .\autotyper-windows-x86_64.exe --install
@@ -83,15 +85,24 @@ On first use, allow it in *System Settings → Privacy & Security → Accessibil
 
 ### The window
 
-1. Paste the text (**Paste**, double-click the text box, or <kbd>Ctrl</kbd>+<kbd>V</kbd>).
-2. Press **Start typing** (<kbd>Ctrl</kbd>+<kbd>Enter</kbd>). Or press **Paste & start**
+1. Paste the text (clipboard icon, double-click the text box, or <kbd>Ctrl</kbd>+<kbd>V</kbd>).
+2. Press **Start** (<kbd>Ctrl</kbd>+<kbd>Enter</kbd>). Or press **Paste & start**
    (<kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>V</kbd>) to do both at once.
-3. The window minimizes, which hands the focus back to the window you used before (for example
-   the Remote Desktop session). If needed, click into the target field during the countdown.
-4. Auto Typer types the text. The taskbar button shows the countdown and progress.
+3. Auto Typer hands the keyboard focus back to the window you used before (for example the
+   Remote Desktop session) and stays on top, showing the countdown and then the progress.
+   If needed, click into the target field during the countdown.
+4. It types the text. Close or minimize the window when you no longer need it.
 
 Press <kbd>Esc</kbd> or move the mouse to stop. After a successful run the text is cleared;
 after a cancelled or failed run it stays, so you can try again.
+
+| Icon | |
+|---|---|
+| eye | show / hide the text |
+| clipboard | paste from the clipboard |
+| × | clear the text |
+| pin | keep the window on top (on by default) |
+| gear | settings: countdown, speed, input method, Enter after the text, tray icon, install |
 
 ### Type the clipboard from anywhere
 
@@ -101,7 +112,7 @@ window and Auto Typer types the clipboard into it two seconds later.
 
 ### Tray icon and hotkey (optional)
 
-Under **More options**, turn on **Keep a tray icon running**. Then:
+In the settings (gear icon), turn on **Tray icon**. Then:
 
 - <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>V</kbd> (configurable) types the clipboard
   into the focused window;
@@ -149,7 +160,7 @@ input method.
   during the countdown; some sessions need a click to wake up first.
 - **Wrong characters**: the remote keyboard layout differs from yours. Use Unicode mode.
 - **Typing stops on its own**: it stops when the mouse moves or another window takes the focus.
-  Both can be turned off under **More options**.
+  Both can be turned off in the settings (gear icon).
 
 ## Privacy
 

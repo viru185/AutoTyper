@@ -16,7 +16,7 @@ body:
     id: version
     attributes:
       label: Auto Typer version
-      description: Output of `autotyper --version`, or the version under "More options".
+      description: Output of `autotyper --version`, or the version shown in the settings (gear icon).
       placeholder: autotyper 1.0.0
     validations:
       required: true
