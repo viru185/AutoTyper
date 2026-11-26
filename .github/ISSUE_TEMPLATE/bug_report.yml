@@ -1,0 +1,49 @@
+name: Bug report
+description: Something does not type, types the wrong characters, or crashes.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Thanks for reporting! Please never paste real passwords or secrets here.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Auto Typer version
+      description: Output of `autotyper --version`, or the version under "More options".
+      placeholder: autotyper 1.0.0
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      placeholder: Windows 11 24H2 / Ubuntu 24.04 (X11) / macOS 15
+    validations:
+      required: true
+  - type: input
+    id: target
+    attributes:
+      label: Target window
+      description: Where were you typing into?
+      placeholder: Remote Desktop lock screen, Hyper-V console, browser-based RDP gateway, ...
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Input method
+      options:
+        - Unicode
+        - Key presses (scan codes)
+        - Both fail
+  - type: input
+    id: layout
+    attributes:
+      label: Keyboard layout(s)
+      description: Local layout, and the remote one if different.
+      placeholder: US English locally, German on the server
