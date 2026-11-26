@@ -5,3 +5,4 @@ pub mod job;
 pub mod paths;
 pub mod settings;
 pub mod text;
+pub mod typing;
