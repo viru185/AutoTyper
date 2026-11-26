@@ -1,0 +1,18 @@
+#!/bin/sh
+# Enforces Conventional Commits: https://www.conventionalcommits.org
+# Enable once per clone:  git config core.hooksPath .githooks
+
+msg=$(head -n 1 "$1")
+pattern='^(build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test)(\([a-z0-9._/-]+\))?!?: .{1,100}$'
+
+case "$msg" in
+  Merge\ *|Revert\ *|fixup!\ *|squash!\ *) exit 0 ;;
+esac
+
+if ! printf '%s' "$msg" | grep -Eq "$pattern"; then
+  echo "commit-msg: not a Conventional Commit:" >&2
+  echo "  $msg" >&2
+  echo "expected: <type>(<scope>)?: <description>, e.g. 'feat(gui): add dark mode'" >&2
+  echo "types: build chore ci docs feat fix perf refactor revert style test" >&2
+  exit 1
+fi
