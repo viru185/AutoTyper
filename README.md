@@ -22,7 +22,8 @@ Remote Desktop session, a hypervisor console, a jump server with clipboard redir
 Auto Typer takes your text (usually a long generated password) and types it into the focused
 window, one keystroke at a time, as if you typed it yourself.
 
-- **Single small executable**: about 4.5 MB, no installer, no runtime, starts instantly.
+- **Single small executable**: about 4.5 MB on Windows (4 MB macOS, 8 MB Linux), no installer,
+  no runtime, starts instantly.
 - **Two input methods**: *Unicode* (works over RDP, including the lock screen) and *key presses*
   (scan codes with Shift/AltGr, for VM consoles and web gateways that ignore Unicode input).
 - **Safe by design**: stops on <kbd>Esc</kbd>, when the mouse moves or when another window takes
