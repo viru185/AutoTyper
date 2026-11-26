@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Auto Typer
+Comment=Type text where paste is blocked
+Exec=autotyper
+Icon=autotyper
+Terminal=false
+Categories=Utility;
+Keywords=type;paste;password;rdp;clipboard;

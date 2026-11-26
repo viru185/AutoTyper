@@ -1,0 +1,107 @@
+name: Release
+
+# release-please keeps a "chore(main): release x.y.z" PR up to date from the Conventional
+# Commits on main. Merging it tags the release; the build job then attaches the binaries.
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
+    steps:
+      - id: release
+        uses: googleapis/release-please-action@v5
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+  build:
+    name: build ${{ matrix.asset }}
+    needs: release-please
+    if: needs.release-please.outputs.release_created == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            asset: autotyper-windows-x86_64.exe
+          - os: windows-11-arm
+            target: aarch64-pc-windows-msvc
+            asset: autotyper-windows-aarch64.exe
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            asset: autotyper-linux-x86_64.tar.gz
+          - os: macos-latest
+            target: universal-apple-darwin
+            asset: autotyper-macos-universal.tar.gz
+    runs-on: ${{ matrix.os }}
+    env:
+      TAG: ${{ needs.release-please.outputs.tag_name }}
+      GH_TOKEN: ${{ github.token }}
+      CARGO_TERM_COLOR: always
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target == 'universal-apple-darwin' && 'aarch64-apple-darwin,x86_64-apple-darwin' || matrix.target }}
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev
+      - name: Build
+        if: matrix.target != 'universal-apple-darwin'
+        run: cargo build --locked --release --target ${{ matrix.target }}
+      - name: Build universal macOS binary
+        if: matrix.target == 'universal-apple-darwin'
+        run: |
+          cargo build --locked --release --target aarch64-apple-darwin
+          cargo build --locked --release --target x86_64-apple-darwin
+          mkdir -p target/universal-apple-darwin/release
+          lipo -create -output target/universal-apple-darwin/release/autotyper \
+            target/aarch64-apple-darwin/release/autotyper \
+            target/x86_64-apple-darwin/release/autotyper
+      - name: Smoke test
+        shell: bash
+        run: |
+          bin=target/${{ matrix.target }}/release/autotyper
+          [ -f "$bin.exe" ] && bin="$bin.exe"
+          "$bin" --version
+          out=$("$bin" --author)
+          grep -q "Viren Hirpara" <<< "$out"
+          if LC_ALL=C grep -q '[^[:print:][:space:]]' <<< "$out"; then
+            echo "--author printed non-ASCII output when piped" >&2
+            exit 1
+          fi
+      - name: Package
+        shell: bash
+        run: |
+          mkdir dist
+          bin=target/${{ matrix.target }}/release/autotyper
+          case "${{ matrix.asset }}" in
+            *.exe)
+              cp "$bin.exe" "dist/${{ matrix.asset }}"
+              ;;
+            *.tar.gz)
+              stage="$RUNNER_TEMP/autotyper"
+              mkdir -p "$stage"
+              cp "$bin" README.md LICENSE assets/autotyper.png packaging/linux/autotyper.desktop "$stage/"
+              tar -C "$RUNNER_TEMP" -czf "dist/${{ matrix.asset }}" autotyper
+              ;;
+          esac
+          cd dist
+          for f in *; do
+            if command -v sha256sum > /dev/null; then sha256sum "$f"; else shasum -a 256 "$f"; fi > "$f.sha256"
+          done
+          ls -l
+      - name: Upload to the GitHub release
+        shell: bash
+        run: gh release upload "$TAG" dist/* --clobber
