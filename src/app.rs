@@ -1,4 +1,5 @@
-//! The window (eframe/egui).
+//! The window (eframe/egui): a small always-on-top box with the text and a Start button;
+//! everything else lives behind the settings toggle.
 //!
 //! Threads: the UI runs on the main thread; each typing job runs on a worker thread and reports
 //! [`JobEvent`]s over a channel; a second-launch "show" arrives from the IPC thread. Both call
@@ -12,8 +13,8 @@ use std::{
 };
 
 use eframe::egui::{
-    self, Align, Button, CollapsingHeader, ComboBox, DragValue, Id, Key, Layout, Modifiers,
-    RichText, TextEdit, ViewportCommand, text_edit::TextEditState,
+    self, Align, Button, ComboBox, DragValue, Id, Key, Layout, Modifiers, ProgressBar, RichText,
+    TextEdit, ViewportCommand, WindowLevel, text_edit::TextEditState,
 };
 use zeroize::{Zeroize, Zeroizing};
 
@@ -28,6 +29,10 @@ use crate::{
 const TITLE: &str = "Auto Typer";
 const TEXT_ID: &str = "autotyper-text";
 const SPEED_PRESETS: [(&str, u32); 3] = [("Fast", 5), ("Normal", 20), ("Safe", 60)];
+const WIDTH: f32 = 400.0;
+/// Vertical inner margin of the central panel (top + bottom) plus a little slack.
+const PANEL_MARGIN: f32 = 18.0;
+const STATUS_HEIGHT: f32 = 18.0;
 
 /// Opens the window and blocks until it is closed. Returns the process exit code.
 pub fn run(settings: Settings) -> i32 {
@@ -66,8 +71,10 @@ fn run_window(settings: Settings, instance: Option<Instance>) -> i32 {
             .with_title(TITLE)
             .with_app_id("autotyper")
             .with_icon(icon)
-            .with_inner_size([480.0, 370.0])
-            .with_min_inner_size([400.0, 320.0]),
+            .with_window_level(window_level(settings.always_on_top))
+            // The height is fitted to the content on the first frame.
+            .with_inner_size([WIDTH, 180.0])
+            .with_min_inner_size([320.0, 120.0]),
         ..Default::default()
     };
     let result = eframe::run_native(
@@ -94,10 +101,20 @@ fn run_window(settings: Settings, instance: Option<Instance>) -> i32 {
     }
 }
 
+fn window_level(always_on_top: bool) -> WindowLevel {
+    if always_on_top {
+        WindowLevel::AlwaysOnTop
+    } else {
+        WindowLevel::Normal
+    }
+}
+
 struct RunningJob {
     cancel: CancelToken,
     events: Receiver<JobEvent>,
     worker: Option<JoinHandle<()>>,
+    countdown: Option<u32>,
+    progress: Option<(usize, usize)>,
 }
 
 struct AutoTyperApp {
@@ -106,12 +123,18 @@ struct AutoTyperApp {
     changed_at: Option<Instant>,
     text: String,
     show_text: bool,
+    show_settings: bool,
     job: Option<RunningJob>,
     status: String,
     status_is_error: bool,
     title: String,
     ipc: Receiver<Message>,
     focus_pending: bool,
+    /// We minimized ourselves to hand the focus back; restore when the job ends.
+    minimized_for_job: bool,
+    /// Our window handle, captured when Start is clicked (Windows).
+    #[cfg(windows)]
+    own_window: Option<isize>,
     autostart: bool,
     _instance: Option<Instance>,
 }
@@ -124,12 +147,16 @@ impl AutoTyperApp {
             changed_at: None,
             text: String::new(),
             show_text: false,
+            show_settings: false,
             job: None,
-            status: "Paste the text, press Start, then click into the target window.".into(),
+            status: "Ready".into(),
             status_is_error: false,
             title: TITLE.into(),
             ipc,
             focus_pending: false,
+            minimized_for_job: false,
+            #[cfg(windows)]
+            own_window: None,
             autostart: autostart::is_enabled(),
             _instance: instance,
         }
@@ -152,7 +179,7 @@ impl AutoTyperApp {
             Ok(text) => {
                 self.clear_text(ctx);
                 self.text.push_str(&text);
-                self.set_status("Pasted from the clipboard.", false);
+                self.set_status("Pasted from the clipboard", false);
             }
             Err(e) => self.set_status(capitalize(&e), true),
         }
@@ -173,7 +200,7 @@ impl AutoTyperApp {
             return;
         }
         if text::tokenize(&self.text, self.settings.trim_trailing_newline).is_empty() {
-            self.set_status("Enter or paste some text first.", true);
+            self.set_status("Paste or type some text first", true);
             return;
         }
         let text = Zeroizing::new(self.text.clone());
@@ -185,11 +212,47 @@ impl AutoTyperApp {
             cancel,
             events: rx,
             worker: Some(worker),
+            countdown: None,
+            progress: None,
         });
-        if self.settings.minimize_on_start {
-            // Minimizing hands the focus back to the window used before us.
-            ctx.send_viewport_cmd(ViewportCommand::Minimized(true));
+        self.set_status("Starting...", false);
+        if self.settings.return_focus_on_start {
+            self.return_focus(ctx);
         }
+    }
+
+    /// Hands the keyboard focus back to the window the user came from (e.g. the Remote
+    /// Desktop session), so typing goes there.
+    fn return_focus(&mut self, ctx: &egui::Context) {
+        #[cfg(windows)]
+        {
+            use crate::platform::windows as win;
+            // Stay visible (and on top) to show the countdown and progress.
+            self.own_window = win::own_foreground_window();
+            if let Some(own) = self.own_window
+                && win::focus_previous_window(own)
+            {
+                return;
+            }
+        }
+        // Fallback: minimizing makes the OS activate the previous window.
+        ctx.send_viewport_cmd(ViewportCommand::Minimized(true));
+        self.minimized_for_job = true;
+    }
+
+    fn restore_after_job(&mut self, ctx: &egui::Context) {
+        if !std::mem::take(&mut self.minimized_for_job) {
+            return;
+        }
+        // Never send ViewportCommand::Focus here: winit fakes an Alt key press for it, which
+        // would land in the target window.
+        #[cfg(windows)]
+        if let Some(own) = self.own_window {
+            // Shows the window again without taking the focus from the target.
+            crate::platform::windows::show_without_activating(own);
+            return;
+        }
+        ctx.send_viewport_cmd(ViewportCommand::Minimized(false));
     }
 
     fn paste_and_start(&mut self, ctx: &egui::Context) {
@@ -241,24 +304,23 @@ impl AutoTyperApp {
         for event in events {
             match event {
                 JobEvent::Countdown(n) => {
-                    self.set_status(
-                        format!("Starting in {n} s: click into the target window. Esc cancels."),
-                        false,
-                    );
+                    if let Some(job) = &mut self.job {
+                        job.countdown = Some(n);
+                    }
+                    self.set_status(format!("Typing starts in {n} s · Esc cancels"), false);
                     self.set_title(ctx, format!("{TITLE} - starting in {n}"));
                 }
                 JobEvent::Started { total } => {
-                    self.set_status(
-                        format!("Typing 0 / {total}... Esc or a mouse move stops it."),
-                        false,
-                    );
+                    if let Some(job) = &mut self.job {
+                        job.countdown = None;
+                        job.progress = Some((0, total));
+                    }
                 }
                 JobEvent::Progress { done, total } => {
+                    if let Some(job) = &mut self.job {
+                        job.progress = Some((done, total));
+                    }
                     let pct = done * 100 / total.max(1);
-                    self.set_status(
-                        format!("Typing {done} / {total}... Esc or a mouse move stops it."),
-                        false,
-                    );
                     self.set_title(ctx, format!("{TITLE} - typing {pct}%"));
                 }
                 JobEvent::Finished(outcome) => self.finish(ctx, outcome),
@@ -268,18 +330,17 @@ impl AutoTyperApp {
 
     fn finish(&mut self, ctx: &egui::Context, outcome: Outcome) {
         self.stop();
-        let done = matches!(outcome, Outcome::Done { .. });
         match &outcome {
             Outcome::Done { typed } => {
                 self.clear_text(ctx);
                 self.set_status(
-                    format!("Done: typed {} keys.", text::thousands(*typed)),
+                    format!("Done · typed {} keys", text::thousands(*typed)),
                     false,
                 );
                 self.set_title(ctx, format!("{TITLE} - done"));
             }
             Outcome::Cancelled { .. } => {
-                self.set_status(format!("{outcome}. The text is still here."), true);
+                self.set_status(format!("{outcome} · the text is kept"), true);
                 self.set_title(ctx, format!("{TITLE} - cancelled"));
             }
             Outcome::Failed(msg) => {
@@ -287,11 +348,7 @@ impl AutoTyperApp {
                 self.set_title(ctx, format!("{TITLE} - failed"));
             }
         }
-        // Never send Focus here: winit fakes an Alt key press for it, which would land in the
-        // target window. Restoring is enough.
-        if !done || self.settings.restore_after_typing {
-            ctx.send_viewport_cmd(ViewportCommand::Minimized(false));
-        }
+        self.restore_after_job(ctx);
     }
 
     fn save_settings_when_idle(&mut self) {
@@ -324,7 +381,7 @@ impl AutoTyperApp {
                 match std::env::current_exe()
                     .and_then(|exe| Command::new(exe).arg("--background").spawn())
                 {
-                    Ok(_) => self.set_status("The tray icon is running.", false),
+                    Ok(_) => self.set_status("The tray icon is running", false),
                     Err(e) => self.set_status(format!("Cannot start the tray icon: {e}"), true),
                 }
             }
@@ -356,36 +413,18 @@ impl AutoTyperApp {
             self.start(&ctx);
         }
 
-        ui.horizontal(|ui| {
-            ui.heading("Text to type");
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if ui.add_enabled(!busy, Button::new("Clear")).clicked() {
-                    self.clear_text(&ctx);
-                }
-                let eye = if self.show_text { "Hide" } else { "Show" };
-                if ui.button(eye).clicked() {
-                    self.show_text = !self.show_text;
-                }
-                if ui
-                    .add_enabled(!busy, Button::new("Paste"))
-                    .on_hover_text("Replace the text with the clipboard (or double-click the box)")
-                    .clicked()
-                {
-                    self.paste(&ctx);
-                }
-            });
-        });
-
+        // The text.
         let response = egui::ScrollArea::vertical()
-            .max_height(150.0)
+            .id_salt("text")
+            .max_height(96.0)
             .show(ui, |ui| {
                 ui.add_enabled(
                     !busy,
                     TextEdit::multiline(&mut self.text)
                         .id(Id::unique(TEXT_ID))
                         .password(!self.show_text)
-                        .hint_text("Paste or type here. Double-click pastes the clipboard.")
-                        .desired_rows(5)
+                        .hint_text("Paste or type the text to type")
+                        .desired_rows(3)
                         .desired_width(f32::INFINITY),
                 )
             })
@@ -393,88 +432,81 @@ impl AutoTyperApp {
         if response.double_clicked() && !busy {
             self.paste(&ctx);
         }
-        let (chars, lines) = text::stats(&self.text);
-        ui.label(
-            RichText::new(format!(
-                "{} chars · {} {}",
-                text::thousands(chars),
-                lines,
-                if lines == 1 { "line" } else { "lines" }
-            ))
-            .small()
-            .weak(),
-        );
-        ui.add_space(6.0);
 
-        ui.add_enabled_ui(!busy, |ui| {
-            egui::Grid::new("options")
-                .num_columns(2)
-                .spacing([12.0, 6.0])
-                .show(ui, |ui| {
-                    ui.label("Countdown");
-                    ui.add(
-                        DragValue::new(&mut self.settings.countdown_secs)
-                            .range(0..=MAX_COUNTDOWN_SECS)
-                            .suffix(" s"),
-                    );
-                    ui.end_row();
-
-                    ui.label("Speed");
-                    ui.horizontal(|ui| {
-                        for (name, ms) in SPEED_PRESETS {
-                            ui.selectable_value(&mut self.settings.key_delay_ms, ms, name);
-                        }
-                        ui.add(
-                            DragValue::new(&mut self.settings.key_delay_ms)
-                                .range(0..=MAX_KEY_DELAY_MS)
-                                .suffix(" ms/key"),
-                        );
-                    });
-                    ui.end_row();
-
-                    ui.label("Input method");
-                    ComboBox::from_id_salt("mode")
-                        .selected_text(self.settings.mode.label())
-                        .show_ui(ui, |ui| {
-                            for mode in Mode::ALL {
-                                ui.selectable_value(&mut self.settings.mode, mode, mode.label());
-                            }
-                        })
-                        .response
-                        .on_hover_text(
-                            "Unicode works almost everywhere, including RDP lock screens.\n\
-                         Key presses: for VM consoles and web gateways that ignore Unicode;\n\
-                         the remote keyboard layout must match yours.",
-                        );
-                    ui.end_row();
-
-                    ui.label("");
-                    ui.checkbox(&mut self.settings.press_enter, "Press Enter after the text");
-                    ui.end_row();
-                });
-        });
-        ui.add_space(8.0);
-
+        // Counts on the left, small icon buttons on the right.
         ui.horizontal(|ui| {
-            let wide = [ui.available_width() * 0.55, 34.0];
-            if busy {
+            let (chars, lines) = text::stats(&self.text);
+            let info = if chars == 0 {
+                "Double-click the box to paste".to_string()
+            } else {
+                format!(
+                    "{} chars · {} {}",
+                    text::thousands(chars),
+                    lines,
+                    if lines == 1 { "line" } else { "lines" }
+                )
+            };
+            ui.label(RichText::new(info).small().weak());
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if toggle(ui, self.show_settings, Icon::Gear, "Settings").clicked() {
+                    self.show_settings = !self.show_settings;
+                }
+                if toggle(ui, self.settings.always_on_top, Icon::Pin, "Keep on top").clicked() {
+                    self.settings.always_on_top = !self.settings.always_on_top;
+                    ctx.send_viewport_cmd(ViewportCommand::WindowLevel(window_level(
+                        self.settings.always_on_top,
+                    )));
+                }
+                ui.separator();
+                ui.add_enabled_ui(!busy, |ui| {
+                    if icon(ui, Icon::Clear, "Clear").clicked() {
+                        self.clear_text(&ctx);
+                        self.set_status("Ready", false);
+                    }
+                    if icon(ui, Icon::Paste, "Paste from the clipboard").clicked() {
+                        self.paste(&ctx);
+                    }
+                });
+                let eye = if self.show_text {
+                    "Hide the text"
+                } else {
+                    "Show the text"
+                };
+                if toggle(ui, self.show_text, Icon::Eye, eye).clicked() {
+                    self.show_text = !self.show_text;
+                }
+            });
+        });
+
+        // Start / Stop.
+        ui.horizontal(|ui| {
+            let height = 30.0;
+            if let Some(job) = &self.job {
+                let label = match job.countdown {
+                    Some(n) => format!("Stop  ·  starts in {n}"),
+                    None => "Stop".into(),
+                };
                 if ui
-                    .add_sized(wide, Button::new(RichText::new("Stop").strong()))
+                    .add_sized([ui.available_width(), height], Button::new(label))
+                    .on_hover_text("Esc also stops")
                     .clicked()
                 {
                     self.stop();
-                    self.set_status("Stopped.", true);
+                    self.set_status("Stopped", true);
                     self.set_title(&ctx, TITLE.into());
                 }
             } else {
-                let start = ui
-                    .add_sized(wide, Button::new(RichText::new("Start typing").strong()))
-                    .on_hover_text("Ctrl+Enter");
-                if start.clicked() {
+                let start = Button::new(RichText::new("Start").strong())
+                    .fill(ui.visuals().selection.bg_fill);
+                if ui
+                    .add_sized([ui.available_width() * 0.6, height], start)
+                    .on_hover_text("Start typing (Ctrl+Enter)")
+                    .clicked()
+                {
                     self.start(&ctx);
                 }
                 if ui
-                    .add_sized([ui.available_width(), 34.0], Button::new("Paste & start"))
+                    .add_sized([ui.available_width(), height], Button::new("Paste & start"))
                     .on_hover_text("Replace the text with the clipboard, then start (Ctrl+Shift+V)")
                     .clicked()
                 {
@@ -482,61 +514,111 @@ impl AutoTyperApp {
                 }
             }
         });
-        ui.add_space(4.0);
-        let status = RichText::new(&self.status);
-        ui.label(if self.status_is_error {
-            status.color(ui.visuals().warn_fg_color)
-        } else {
-            status
-        });
-        ui.add_space(4.0);
 
-        CollapsingHeader::new("More options").show(ui, |ui| {
-            ui.add_enabled_ui(!busy, |ui| self.draw_more(ui));
-        });
+        // Status line, or progress while typing.
+        let width = ui.available_width();
+        ui.allocate_ui_with_layout(
+            egui::vec2(width, STATUS_HEIGHT),
+            Layout::top_down(Align::Min),
+            |ui| {
+                if let Some((done, total)) = self.job.as_ref().and_then(|j| j.progress) {
+                    ui.add(
+                        ProgressBar::new(done as f32 / total.max(1) as f32)
+                            .desired_height(STATUS_HEIGHT)
+                            .text(format!("{done} / {total} · Esc stops")),
+                    );
+                } else {
+                    let status = RichText::new(&self.status).small();
+                    ui.label(if self.status_is_error {
+                        status.color(ui.visuals().warn_fg_color)
+                    } else {
+                        status.weak()
+                    });
+                }
+            },
+        );
+
+        if self.show_settings {
+            ui.separator();
+            ui.add_enabled_ui(!busy, |ui| self.draw_settings(ui));
+        }
     }
 
-    fn draw_more(&mut self, ui: &mut egui::Ui) {
+    fn draw_settings(&mut self, ui: &mut egui::Ui) {
         let s = &mut self.settings;
+        egui::Grid::new("settings")
+            .num_columns(2)
+            .spacing([10.0, 6.0])
+            .show(ui, |ui| {
+                ui.label("Countdown");
+                ui.add(
+                    DragValue::new(&mut s.countdown_secs)
+                        .range(0..=MAX_COUNTDOWN_SECS)
+                        .suffix(" s"),
+                );
+                ui.end_row();
+
+                ui.label("Speed");
+                ui.horizontal(|ui| {
+                    for (name, ms) in SPEED_PRESETS {
+                        ui.selectable_value(&mut s.key_delay_ms, ms, name);
+                    }
+                    ui.add(
+                        DragValue::new(&mut s.key_delay_ms)
+                            .range(0..=MAX_KEY_DELAY_MS)
+                            .suffix(" ms"),
+                    )
+                    .on_hover_text("Pause between keystrokes");
+                });
+                ui.end_row();
+
+                ui.label("Input");
+                ComboBox::from_id_salt("mode")
+                    .selected_text(s.mode.label())
+                    .show_ui(ui, |ui| {
+                        for mode in Mode::ALL {
+                            ui.selectable_value(&mut s.mode, mode, mode.label());
+                        }
+                    })
+                    .response
+                    .on_hover_text(
+                        "Unicode works almost everywhere, including RDP lock screens.\n\
+                         Key presses: for VM consoles and web gateways that ignore Unicode;\n\
+                         the remote keyboard layout must match yours.",
+                    );
+                ui.end_row();
+
+                ui.label("Clipboard delay");
+                ui.add(
+                    DragValue::new(&mut s.clipboard_delay_secs)
+                        .range(0..=MAX_COUNTDOWN_SECS)
+                        .suffix(" s"),
+                )
+                .on_hover_text("Wait before \"Type clipboard\" (Start menu, tray, --clipboard)");
+                ui.end_row();
+            });
+        ui.checkbox(&mut s.press_enter, "Press Enter after the text");
         ui.checkbox(
-            &mut s.minimize_on_start,
-            "Minimize on Start (gives the focus back to the previous window)",
-        );
-        ui.checkbox(
-            &mut s.restore_after_typing,
-            "Bring the window back when done",
+            &mut s.return_focus_on_start,
+            "Give the focus back to the previous window on Start",
         );
         ui.checkbox(&mut s.abort_on_mouse_move, "Stop when the mouse moves");
         ui.checkbox(
             &mut s.abort_on_focus_change,
             "Stop when another window gets the focus",
         );
-        ui.checkbox(
-            &mut s.trim_trailing_newline,
-            "Ignore one trailing line break",
-        );
-        ui.horizontal(|ui| {
-            ui.label("Type-clipboard delay");
-            ui.add(
-                DragValue::new(&mut s.clipboard_delay_secs)
-                    .range(0..=MAX_COUNTDOWN_SECS)
-                    .suffix(" s"),
-            );
-        });
+        ui.checkbox(&mut s.trim_trailing_newline, "Ignore a trailing line break");
         ui.checkbox(
             &mut s.clear_clipboard_after,
             "Clear the clipboard after typing it",
         );
 
         ui.separator();
-        ui.checkbox(
-            &mut s.tray,
-            "Keep a tray icon running (type the clipboard from anywhere)",
-        );
+        ui.checkbox(&mut s.tray, "Tray icon (type the clipboard from anywhere)");
         ui.add_enabled_ui(s.tray, |ui| {
             ui.horizontal(|ui| {
                 ui.checkbox(&mut s.hotkey_enabled, "Hotkey");
-                ui.add(TextEdit::singleline(&mut s.hotkey).desired_width(160.0))
+                ui.add(TextEdit::singleline(&mut s.hotkey).desired_width(150.0))
                     .on_hover_text("For example Ctrl+Alt+Shift+V or Ctrl+Shift+F9");
             });
             let exe = install::installed_exe()
@@ -563,42 +645,61 @@ impl AutoTyperApp {
         });
 
         ui.separator();
-        if cfg!(any(windows, target_os = "linux")) {
-            if install::running_installed_copy() {
-                ui.horizontal(|ui| {
-                    ui.label("Installed for this user.");
+        ui.horizontal(|ui| {
+            if cfg!(any(windows, target_os = "linux")) {
+                if install::running_installed_copy() {
                     if ui.button("Uninstall...").clicked()
                         && let Ok(exe) = std::env::current_exe()
                     {
                         let _ = Command::new(exe).arg("--uninstall").spawn();
                     }
-                });
-            } else {
-                let label = if install::is_installed() {
-                    "Update the installed copy"
                 } else {
-                    "Install"
-                };
-                if ui
-                    .button(label)
-                    .on_hover_text("Copies Auto Typer to your user profile and adds Start menu entries, so you can launch it from Windows Search or PowerToys Command Palette.")
-                    .clicked()
-                {
-                    match install::install() {
-                        Ok(msg) => self.set_status(msg, false),
-                        Err(e) => self.set_status(format!("Install failed: {e}"), true),
+                    let label = if install::is_installed() {
+                        "Update installed copy"
+                    } else {
+                        "Install"
+                    };
+                    if ui
+                        .button(label)
+                        .on_hover_text(
+                            "Copies Auto Typer to your user profile and adds Start menu \
+                             entries, so you can launch it from Windows Search or PowerToys \
+                             Command Palette.",
+                        )
+                        .clicked()
+                    {
+                        match install::install() {
+                            Ok(msg) => self.set_status(msg, false),
+                            Err(e) => self.set_status(format!("Install failed: {e}"), true),
+                        }
                     }
                 }
             }
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                ui.label(
+                    RichText::new(format!("v{}", env!("CARGO_PKG_VERSION")))
+                        .small()
+                        .weak(),
+                )
+                .on_hover_text("github.com/viru185/AutoTyper");
+            });
+        });
+    }
+
+    /// Keeps the window exactly as tall as its content (the width is up to the user).
+    fn fit_height(&self, ctx: &egui::Context, content_height: f32) {
+        let (inner, minimized) = ctx.input(|i| (i.viewport().inner_rect, i.viewport().minimized));
+        let Some(inner) = inner else { return };
+        if minimized == Some(true) || inner.height() < 1.0 {
+            return;
         }
-        ui.label(
-            RichText::new(format!(
-                "Auto Typer {} · github.com/viru185/AutoTyper",
-                env!("CARGO_PKG_VERSION")
-            ))
-            .small()
-            .weak(),
-        );
+        let wanted = (content_height + PANEL_MARGIN).ceil();
+        if (wanted - inner.height()).abs() > 2.0 {
+            ctx.send_viewport_cmd(ViewportCommand::InnerSize(egui::vec2(
+                inner.width(),
+                wanted,
+            )));
+        }
     }
 }
 
@@ -616,11 +717,16 @@ impl eframe::App for AutoTyperApp {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        egui::CentralPanel::default().show(ui, |ui| {
-            egui::ScrollArea::vertical()
-                .auto_shrink(false)
-                .show(ui, |ui| self.draw(ui));
-        });
+        let content_height = egui::CentralPanel::default()
+            .show(ui, |ui| {
+                egui::ScrollArea::vertical()
+                    .auto_shrink(false)
+                    .show(ui, |ui| self.draw(ui))
+                    .content_size
+                    .y
+            })
+            .inner;
+        self.fit_height(ui.ctx(), content_height);
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
@@ -630,6 +736,94 @@ impl eframe::App for AutoTyperApp {
             let _ = self.settings.save();
         }
     }
+}
+
+/// Small icons, drawn with vector shapes: the default fonts have no symbol glyphs, and an
+/// emoji font would add hundreds of KB to the binary.
+#[derive(Clone, Copy)]
+enum Icon {
+    Eye,
+    Paste,
+    Clear,
+    Pin,
+    Gear,
+}
+
+/// A frameless icon button.
+fn icon(ui: &mut egui::Ui, icon: Icon, tip: &str) -> egui::Response {
+    icon_button(ui, icon, false, tip)
+}
+
+/// An icon button that is highlighted while `on`.
+fn toggle(ui: &mut egui::Ui, on: bool, icon: Icon, tip: &str) -> egui::Response {
+    icon_button(ui, icon, on, tip)
+}
+
+fn icon_button(ui: &mut egui::Ui, icon: Icon, selected: bool, tip: &str) -> egui::Response {
+    use egui::{Pos2, Sense, Shape, Stroke, vec2};
+
+    let (rect, response) = ui.allocate_exact_size(vec2(26.0, 22.0), Sense::click());
+    if ui.is_rect_visible(rect) {
+        let visuals = ui.style().interact_selectable(&response, selected);
+        let painter = ui.painter();
+        if selected || response.hovered() {
+            painter.rect_filled(rect, 4.0, visuals.weak_bg_fill);
+        }
+        let color = visuals.fg_stroke.color;
+        let stroke = Stroke::new(1.4, color);
+        let c = rect.center();
+        let r = 7.0;
+        match icon {
+            Icon::Eye => {
+                painter.add(Shape::ellipse_stroke(c, vec2(r, r * 0.6), stroke));
+                painter.circle_filled(c, r * 0.3, color);
+            }
+            Icon::Paste => {
+                let board =
+                    egui::Rect::from_center_size(c + vec2(0.0, 1.0), vec2(r * 1.4, r * 1.7));
+                painter.rect_stroke(board, 1.5, stroke, egui::StrokeKind::Inside);
+                let clip = egui::Rect::from_center_size(
+                    Pos2::new(c.x, board.top()),
+                    vec2(r * 0.7, r * 0.45),
+                );
+                painter.rect_filled(clip, 1.0, color);
+            }
+            Icon::Clear => {
+                let d = r * 0.6;
+                painter.line_segment([c + vec2(-d, -d), c + vec2(d, d)], stroke);
+                painter.line_segment([c + vec2(-d, d), c + vec2(d, -d)], stroke);
+            }
+            Icon::Pin => {
+                // A push pin: head, collar and needle.
+                let head = egui::Rect::from_min_max(
+                    Pos2::new(c.x - r * 0.4, c.y - r),
+                    Pos2::new(c.x + r * 0.4, c.y - r * 0.1),
+                );
+                painter.rect_filled(head, 1.5, color);
+                painter.line_segment(
+                    [
+                        Pos2::new(c.x - r * 0.75, c.y - r * 0.1),
+                        Pos2::new(c.x + r * 0.75, c.y - r * 0.1),
+                    ],
+                    stroke,
+                );
+                painter.line_segment([Pos2::new(c.x, c.y), Pos2::new(c.x, c.y + r)], stroke);
+            }
+            Icon::Gear => {
+                for k in 0..8 {
+                    let a = k as f32 * std::f32::consts::FRAC_PI_4;
+                    let dir = vec2(a.cos(), a.sin());
+                    painter.line_segment(
+                        [c + dir * r * 0.55, c + dir * r * 0.95],
+                        Stroke::new(2.6, color),
+                    );
+                }
+                painter.circle_stroke(c, r * 0.6, Stroke::new(2.0, color));
+                painter.circle_filled(c, r * 0.2, color);
+            }
+        }
+    }
+    response.on_hover_text(tip)
 }
 
 fn spawn_worker(

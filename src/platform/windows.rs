@@ -9,7 +9,8 @@ use std::{
 
 use windows_sys::{
     Win32::{
-        Foundation::ERROR_SUCCESS,
+        Foundation::{ERROR_SUCCESS, HWND},
+        Graphics::Dwm::{DWMWA_CLOAKED, DwmGetWindowAttribute},
         System::{
             Com::CoTaskMemFree,
             Console::{FreeConsole, GetConsoleProcessList, GetConsoleWindow},
@@ -21,8 +22,11 @@ use windows_sys::{
         UI::{
             Shell::{KF_FLAG_DONT_VERIFY, SHGetKnownFolderPath},
             WindowsAndMessaging::{
-                MB_ICONERROR, MB_ICONINFORMATION, MB_OK, MB_SETFOREGROUND, MessageBoxW, SW_HIDE,
-                ShowWindow,
+                GW_HWNDNEXT, GWL_EXSTYLE, GetClassNameW, GetForegroundWindow, GetWindow,
+                GetWindowLongW, GetWindowTextLengthW, GetWindowThreadProcessId, IsIconic, IsWindow,
+                IsWindowVisible, MB_ICONERROR, MB_ICONINFORMATION, MB_OK, MB_SETFOREGROUND,
+                MessageBoxW, SW_HIDE, SW_SHOWNOACTIVATE, SetForegroundWindow, ShowWindow,
+                WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
             },
         },
     },
@@ -181,6 +185,90 @@ pub fn reg_delete_tree(key: &str) {
     unsafe {
         RegDeleteTreeW(HKEY_CURRENT_USER, key.as_ptr());
         RegDeleteKeyW(HKEY_CURRENT_USER, key.as_ptr());
+    }
+}
+
+// ----------------------------------------------------------------------------- windows & focus
+//
+// Window handles are passed around as `isize`: raw `HWND` pointers are not `Send`.
+
+fn window_pid(hwnd: HWND) -> u32 {
+    let mut pid = 0u32;
+    // SAFETY: valid out-pointer; a stale handle just yields 0.
+    unsafe { GetWindowThreadProcessId(hwnd, &mut pid) };
+    pid
+}
+
+/// The foreground window if it belongs to this process: our own window, right after the
+/// user clicked a button in it.
+pub fn own_foreground_window() -> Option<isize> {
+    // SAFETY: no preconditions.
+    let hwnd = unsafe { GetForegroundWindow() };
+    (!hwnd.is_null() && window_pid(hwnd) == std::process::id()).then_some(hwnd as isize)
+}
+
+/// Gives the keyboard focus back to the window the user worked in before ours: the first
+/// normal window below ours in the Z-order, which is also what Windows activates when a window
+/// is minimized. Returns `false` if there is none.
+pub fn focus_previous_window(own: isize) -> bool {
+    let mut hwnd = own as HWND;
+    loop {
+        // SAFETY: walking the Z-order; a null handle ends the walk.
+        hwnd = unsafe { GetWindow(hwnd, GW_HWNDNEXT) };
+        if hwnd.is_null() {
+            return false;
+        }
+        if can_take_focus(hwnd) {
+            // SAFETY: plain call. We are the foreground process, so Windows allows it.
+            return unsafe { SetForegroundWindow(hwnd) } != 0;
+        }
+    }
+}
+
+/// A visible, normal application window of another process.
+fn can_take_focus(hwnd: HWND) -> bool {
+    // SAFETY: plain calls on a window handle; stale handles just fail the checks.
+    unsafe {
+        if IsWindowVisible(hwnd) == 0 || IsIconic(hwnd) != 0 || GetWindowTextLengthW(hwnd) == 0 {
+            return false;
+        }
+        let ex_style = GetWindowLongW(hwnd, GWL_EXSTYLE) as u32;
+        if ex_style & (WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE) != 0 {
+            return false;
+        }
+        // Cloaked: hidden by the shell (suspended Store apps, other virtual desktops).
+        let mut cloaked = 0u32;
+        DwmGetWindowAttribute(
+            hwnd,
+            DWMWA_CLOAKED as u32,
+            (&mut cloaked as *mut u32).cast(),
+            4,
+        );
+        if cloaked != 0 {
+            return false;
+        }
+        let mut class = [0u16; 64];
+        let len = GetClassNameW(hwnd, class.as_mut_ptr(), class.len() as i32).max(0) as usize;
+        let class = String::from_utf16_lossy(&class[..len]);
+        // The taskbar and the desktop are not where the user was typing.
+        if matches!(
+            class.as_str(),
+            "Shell_TrayWnd" | "Shell_SecondaryTrayWnd" | "Progman" | "WorkerW"
+        ) {
+            return false;
+        }
+    }
+    window_pid(hwnd) != std::process::id()
+}
+
+/// Restores a minimized window without taking the focus from the window being typed into.
+pub fn show_without_activating(hwnd: isize) {
+    let hwnd = hwnd as HWND;
+    // SAFETY: plain calls; a stale handle is rejected by IsWindow.
+    unsafe {
+        if IsWindow(hwnd) != 0 {
+            ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+        }
     }
 }
 

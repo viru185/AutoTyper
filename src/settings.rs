@@ -26,10 +26,10 @@ pub struct Settings {
     pub trim_trailing_newline: bool,
     /// Press Enter after the text.
     pub press_enter: bool,
-    /// Minimize the window on Start, so the focus goes back to the previous window.
-    pub minimize_on_start: bool,
-    /// Bring the window back when typing ends.
-    pub restore_after_typing: bool,
+    /// On Start, give the keyboard focus back to the window used before Auto Typer.
+    pub return_focus_on_start: bool,
+    /// Keep the window above all other windows.
+    pub always_on_top: bool,
     pub abort_on_mouse_move: bool,
     pub abort_on_focus_change: bool,
     /// Clear the clipboard after typing it (type-clipboard actions only).
@@ -50,8 +50,8 @@ impl Default for Settings {
             mode: Mode::Unicode,
             trim_trailing_newline: true,
             press_enter: false,
-            minimize_on_start: true,
-            restore_after_typing: false,
+            return_focus_on_start: true,
+            always_on_top: true,
             abort_on_mouse_move: true,
             abort_on_focus_change: true,
             clear_clipboard_after: false,
