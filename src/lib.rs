@@ -3,6 +3,7 @@
 
 pub mod autostart;
 pub mod cli;
+pub mod clipboard;
 pub mod install;
 pub mod instance;
 pub mod job;
