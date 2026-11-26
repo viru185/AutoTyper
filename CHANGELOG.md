@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.1.0](https://github.com/viru185/AutoTyper/compare/v1.0.0...v1.1.0) (2026-11-26)
+
+
+### Features
+
+* **gui:** minimal always-on-top window ([6c728ca](https://github.com/viru185/AutoTyper/commit/6c728ca121dd7450879b0b02f012dfa2828f6d29))
+
+
+### Documentation
+
+* describe the minimal window and its icons ([b811427](https://github.com/viru185/AutoTyper/commit/b811427d6b8eb43fd809eadd4d018b97814a47d4))
+
 ## 1.0.0 (2026-11-26)
 
 
